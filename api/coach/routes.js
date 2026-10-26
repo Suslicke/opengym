@@ -171,7 +171,7 @@ export function coachRoutes({ json, readBody, readSession, requireAdmin }) {
           http: !!p.http, baseUrl: !!p.baseUrl, keyOptional: !!p.keyOptional, keyPlaceholder: p.keyPlaceholder || null,
           defaultModel: p.defaultModel || null,
           // Which providers already hold a key — so switching chips is visibly not a reset.
-          connected: !!(cfgStore.authFor(cfg, id) && cfgStore.authFor(cfg, id).data)
+          connected: !!(cfgStore.authFor(cfg, id) && cfgStore.authFor(cfg, id).data) || cfgStore.usesCodexCache(cfg, id)
         })),
         model: cfgStore.modelFor(cfg),
         models: cfg.models,
@@ -196,6 +196,7 @@ export function coachRoutes({ json, readBody, readSession, requireAdmin }) {
           const meta = cfgStore.providerMeta(cfg);
           const rec = cfgStore.authFor(cfg);
           if (!meta.oauthEnv && !meta.apiKeyEnv) return { state: 'not-required' };
+          if (cfgStore.usesCodexCache(cfg)) return { state: 'connected', type: cfgStore.CODEX_CACHE_TYPE, account: cfgStore.CODEX_CACHE_ACCOUNT, connectedAt: null };
           if (!rec || !rec.data) return { state: meta.keyOptional ? 'optional' : 'none' };
           if (!cfgStore.decrypt(rec.data)) return { state: 'unreadable' };
           return { state: 'connected', type: rec.type || null, account: rec.account || null, connectedAt: rec.connectedAt || null };

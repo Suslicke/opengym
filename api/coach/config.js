@@ -42,6 +42,20 @@ const FILE = path.join(DATA, 'coach.json');
  * So the runtime gets its own mount, and the backup instructions stay true rather than being
  * quietly wrong about what they capture. */
 export const CREDENTIAL_HOME = process.env.COACH_CREDENTIAL_DIR || '/coach-auth';
+/* Fork (Suslicke/opengym): a Codex login cache that already exists in CREDENTIAL_HOME — a
+ * ChatGPT sign-in made elsewhere and mounted here — counts as the instance's Codex credential when
+ * no key is filed. Presence only: the file is stat()ed, never opened, read or copied; the Codex
+ * CLI is the only thing that reads it, inside a job, through CODEX_HOME. A filed key still wins
+ * (it would be exported as CODEX_API_KEY and override the cache anyway). */
+export const CODEX_CACHE_TYPE = 'cli-cache';
+export const CODEX_CACHE_ACCOUNT = 'Codex login cache';
+export function hasCodexCache() {
+  try { return fs.statSync(path.join(CREDENTIAL_HOME, 'auth.json')).isFile(); } catch { return false; }
+}
+/** The provider is Codex, nothing is filed for it, and a login cache is mounted. */
+export const usesCodexCache = (cfg, p = cfg.provider) =>
+  p === 'codex' && !(cfg.auth && cfg.auth.codex && cfg.auth.codex.data) && hasCodexCache();
+
 export const COACH_DISABLED = /^(1|true|yes|on)$/i.test(process.env.COACH_DISABLED || '');
 
 // Providers this build can drive. `runtime` is what the adapter runs. Adding one is an adapter
@@ -256,6 +270,9 @@ export function credentialFor(uid) {
     return { ok: false, reason: 'shared-account', message: SHARED_ACCOUNT_REFUSAL, mode: 'instance' };
   }
   const rec = authFor(cfg);
+  if (usesCodexCache(cfg)) {
+    return { ok: true, auth: null, type: CODEX_CACHE_TYPE, account: CODEX_CACHE_ACCOUNT, mode: 'instance' };
+  }
   const auth = rec && rec.data ? decrypt(rec.data) : null;
   if (!auth || !auth.token) {
     // An endpoint that takes no key (a model on the LAN) is connected without one. Only when
@@ -273,14 +290,15 @@ export function credentialFor(uid) {
    the provider terms forbid. An API key is what an admin pastes so their household can use the
    Coach; binding it to whoever happened to click first would just look broken, and the daily
    caps are what bound its spend. */
-export const isPersonalCredential = type => type === 'cli-token' || type === 'oauth';
+export const isPersonalCredential = type => type === 'cli-token' || type === 'oauth' || type === CODEX_CACHE_TYPE;
 
 /** First profile to actually spend the instance credential binds it — a personal credential
  *  only; an API key is shared by every profile on the instance. */
 export function bindInstanceCredential(uid) {
   const cfg = load();
   const rec = authFor(cfg);
-  if (cfg.authMode === 'instance' && !boundUidFor(cfg) && cfg.provider !== 'fixture' && rec && isPersonalCredential(rec.type)) {
+  const type = usesCodexCache(cfg) ? CODEX_CACHE_TYPE : rec && rec.type;
+  if (cfg.authMode === 'instance' && !boundUidFor(cfg) && cfg.provider !== 'fixture' && type && isPersonalCredential(type)) {
     save({ boundUid: { ...cfg.boundUid, [cfg.provider]: uid } });
   }
 }
@@ -318,6 +336,7 @@ export function isConnected() {
   if (!isEnabled()) return false;
   if (cfg.provider === 'fixture') return true;
   if (cfg.authMode === 'profile') return true;
+  if (usesCodexCache(cfg)) return true;
   const rec = authFor(cfg);
   if (!rec) return !!providerMeta(cfg).keyOptional && !!baseUrlFor(cfg.provider, cfg);
   return !!decrypt(rec.data);
