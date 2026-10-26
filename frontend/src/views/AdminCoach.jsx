@@ -106,6 +106,12 @@ export default function AdminCoach() {
     if (e.target.value.trim() === '') { e.target.value = d.caps[key]; return }
     if (+e.target.value !== d.caps[key]) patch({ caps: { ...d.caps, [key]: +e.target.value } })
   }
+  const useServerLogin = async () => {
+    setBusy(true)
+    try { await api('/api/admin/coach/connect', { method: 'POST', body: JSON.stringify({ provider: 'codex', type: 'cli-cache' }) }); toast('Using the server Codex login'); await load() }
+    catch (e) { toast(e.message) }
+    setBusy(false)
+  }
   const disconnect = async () => {
     setBusy(true)
     try { await api('/api/admin/coach/disconnect', { method: 'POST', body: JSON.stringify({ provider: d.provider }) }); toast('Credential removed'); await load() }
@@ -258,6 +264,7 @@ export default function AdminCoach() {
             ? 'Paste either a Claude Code setup token (your subscription) or an Anthropic API key (pay per use).'
             : 'Paste an API key from the provider\'s console. It is stored encrypted on this server and sent to the provider only while a job runs.'}</div>}
           <div className="adm-actions">
+            {d.codexCache && <Button size="sm" variant="primary" icon="key" disabled={busy} onClick={useServerLogin}>Use server Codex login</Button>}
             {meta.setupToken && <Button size="sm" variant="primary" icon="key" disabled={busy}
               onClick={() => openSheet(close => <SetupTokenSheet close={close} onDone={load} label={meta.label} />)}>Add Claude Code token</Button>}
             {meta.apiKey && <Button size="sm" variant={meta.setupToken ? undefined : 'primary'} icon="lock" disabled={busy}
@@ -421,7 +428,7 @@ const credentialHint = (auth, meta) => {
 }
 
 const credentialLabel = type => ({
-  'cli-token': 'Claude Code setup token', 'chatgpt-cli': 'ChatGPT CLI login', oauth: 'legacy token', apikey: 'API key'
+  'cli-token': 'Claude Code setup token', 'chatgpt-cli': 'ChatGPT CLI login', 'cli-cache': 'the server Codex login', oauth: 'legacy token', apikey: 'API key'
 }[type] || 'credential')
 
 // The failure classes jobs.js emits, in words an operator can act on.

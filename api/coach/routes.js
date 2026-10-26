@@ -187,6 +187,8 @@ export function coachRoutes({ json, readBody, readSession, requireAdmin }) {
         community: !!cfg.community,
         runtime: { ok: !!check.ok, version: check.version || null, error: check.error || null, needsKey: !!check.needsKey },
         authMode: cfg.authMode,
+        // Fork: a Codex login cache is mounted and may be opted in to (presence only).
+        codexCache: cfg.provider === 'codex' && cfgStore.hasCodexCache(),
         boundUid: cfgStore.boundUidFor(cfg),
         /* Whether a credential is filed, and whose — never the credential. `unreadable` is its
            own state rather than "not connected" because it has a specific cause and a specific
@@ -321,6 +323,11 @@ export function coachRoutes({ json, readBody, readSession, requireAdmin }) {
       if (!cfgStore.PROVIDERS[provider]) return json(res, 400, { error: 'unknown provider' });
       const meta = cfgStore.PROVIDERS[provider];
       const type = String(body.type || '');
+      // Fork: "Use server Codex login" — opt in to the mounted login cache; no token travels.
+      if (provider === 'codex' && type === cfgStore.CODEX_CACHE_TYPE) {
+        if (!cfgStore.useCodexLoginCache()) return json(res, 400, { error: 'no Codex login cache is mounted on this server' });
+        return json(res, 200, { ok: true });
+      }
       const envVar = (type === 'cli-token' || type === 'oauth') ? meta.oauthEnv
         : type === 'apikey' ? meta.apiKeyEnv : null;
       if (!envVar) {

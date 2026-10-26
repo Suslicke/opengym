@@ -52,9 +52,9 @@ export const CODEX_CACHE_ACCOUNT = 'Codex login cache';
 export function hasCodexCache() {
   try { return fs.statSync(path.join(CREDENTIAL_HOME, 'auth.json')).isFile(); } catch { return false; }
 }
-/** The provider is Codex, nothing is filed for it, and a login cache is mounted. */
+/** The provider is Codex, an admin opted in to the cache, nothing is filed, and a cache is mounted. */
 export const usesCodexCache = (cfg, p = cfg.provider) =>
-  p === 'codex' && !(cfg.auth && cfg.auth.codex && cfg.auth.codex.data) && hasCodexCache();
+  p === 'codex' && cfg.useCodexCache === true && !(cfg.auth && cfg.auth.codex && cfg.auth.codex.data) && hasCodexCache();
 
 export const COACH_DISABLED = /^(1|true|yes|on)$/i.test(process.env.COACH_DISABLED || '');
 
@@ -100,6 +100,10 @@ const DEFAULTS = {
   // Anonymous medians across profiles that opt in ("compare with others"). Off by default: it
   // is the one feature where one person's numbers feed into what another person sees.
   community: false,
+  // Fork: an admin opted in to the mounted Codex login cache ("Use server Codex login"). Set only
+  // by that explicit action, cleared by every Codex connect/disconnect (saveAuth), so a cache that
+  // merely exists never connects anything on its own.
+  useCodexCache: false,
   // How long a chat/refine message or review note can be. Was a bare 1000 literal in three
   // different files (routes.js, jobs.js, payload.js) before this was configurable — see issue
   // #267. The admin route clamps a write to [MAX_MESSAGE_LEN_FLOOR, MAX_MESSAGE_LEN_CEILING];
@@ -206,7 +210,16 @@ export function saveAuth(provider, auth) {
   if (auth) next[provider] = auth; else delete next[provider];
   // boundUid resets with the credential: a new account has not been spent by anyone yet.
   const bound = { ...cfg.boundUid }; delete bound[provider];
-  return save({ auth: next, boundUid: bound });
+  // Any Codex connect or disconnect ends the opt-in to the login cache (fork).
+  return save({ auth: next, boundUid: bound, ...(provider === 'codex' ? { useCodexCache: false } : {}) });
+}
+/** Fork: the explicit admin action that opts in to the mounted Codex login cache. Drops any filed
+ *  Codex key and binding first, so the switch from a key to the personal cache is never implicit. */
+export function useCodexLoginCache() {
+  if (!hasCodexCache()) return false;
+  saveAuth('codex', null);
+  save({ useCodexCache: true });
+  return true;
 }
 export function saveModel(provider, model) {
   const next = { ...load().models };
