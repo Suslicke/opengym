@@ -29,7 +29,13 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: api/package-lock.json
+          cache-dependency-path: |
+            api/package-lock.json
+            mcp/package-lock.json
+      # /api/mcp and /api/hub/v1/summary run the tools in mcp/src, which resolve their own
+      # dependencies from mcp/node_modules in the source tree.
+      - run: npm ci
+        working-directory: mcp
       - run: npm ci --omit=optional
         working-directory: api
       - run: npm test
@@ -46,10 +52,15 @@ jobs:
             context: .
             file: ./web/Dockerfile
             target: ''
+            contexts: ''
           - image: opengym-coach
             context: ./api
             file: ./api/Dockerfile
             target: coach
+            # The MCP tools and the frontend lib they compute with (api/Dockerfile).
+            contexts: |
+              mcp=./mcp/src
+              frontendlib=./frontend/src/lib
     steps:
       - uses: actions/checkout@v7
 
@@ -73,6 +84,7 @@ jobs:
           context: ${{ matrix.context }}
           file: ${{ matrix.file }}
           target: ${{ matrix.target }}
+          build-contexts: ${{ matrix.contexts }}
           platforms: linux/amd64
           build-args: |
             VERSION=${{ steps.meta.outputs.version }}

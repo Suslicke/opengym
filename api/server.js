@@ -35,6 +35,7 @@ import { createMediaStore, mediaLimits, mediaConfig, MediaError, HASH_RE } from 
 import { effectiveRoutineId } from './queue.js';
 import { stampPut } from './sync-stamps.js';
 import { atomicWrite as durableWrite } from './durable.js';
+import { integrationRoutes } from './integrations.js';
 import { excusedOn, nudgeFor, nudgeWindowOpen, toneOf } from './nudge.js';
 import { oidcConfig, createOidcClient, OidcError, pkcePair, randomToken, sealFlow, openFlow, safeEqual } from './oidc.js';
 
@@ -2225,7 +2226,15 @@ function dataWritable() {
   return ok;
 }
 
+// Fork (Suslicke/opengym): token-only machine access, see integrations.js.
+const integrations = integrationRoutes({ json, readBody, getDb: () => db, isAdmin, dataDir: DATA, origin: ORIGIN });
+
 const routes = {
+  // MCP over Streamable HTTP (OPENGYM_MCP_TOKEN) and the admin-hub summary (OPENGYM_HUB_TOKEN).
+  'POST /api/mcp': integrations.mcp,
+  'GET /api/mcp': integrations.mcpNoStream,
+  'GET /api/hub/v1/summary': integrations.hubSummary,
+
   // 503 rather than a flag in a 200: the container healthcheck is `wget --spider`, which reads
   // the status and nothing else, and an instance that cannot write its data directory is exactly
   // what "unhealthy" is for. The 200 keeps the shape it had, plus the flag it is now asserting.

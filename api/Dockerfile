@@ -11,6 +11,11 @@
 # The stage order matters: Docker builds the *last* stage when none is named, so `default` is
 # deliberately last and `coach` sits above it.
 
+# Stand-ins for the named build contexts `mcp` and `frontendlib` (see the COPY --from below):
+# a build that passes them replaces these stages; one that does not copies nothing.
+FROM scratch AS mcp
+FROM scratch AS frontendlib
+
 FROM node:22-alpine AS base
 
 # Declared on the base stage so both targets inherit the labels and the healthcheck.
@@ -55,8 +60,18 @@ RUN npm ci --omit=dev --omit=optional && npm cache clean --force
 
 # Every module server.js imports from the api root has to be named here: the image carries nothing
 # else, and one that is missing only shows at boot, as ERR_MODULE_NOT_FOUND.
-COPY server.js oidc.js push-messages.js nudge.js nudge-copy.js verify-error.js password.js rate-limit.js passkeys-store.js device-link.js media.js queue.js sync-stamps.js durable.js ./
+COPY server.js oidc.js push-messages.js nudge.js nudge-copy.js verify-error.js password.js rate-limit.js passkeys-store.js device-link.js media.js queue.js sync-stamps.js durable.js integrations.js ./
 COPY coach ./coach
+# Fork (Suslicke/opengym): the MCP tools behind /api/mcp and /api/hub/v1/summary, with the
+# frontend lib modules they compute with, at the same paths relative to /app as in the source
+# tree (../mcp/src, ../frontend/src/lib). They are outside this build context, so they come in as
+# named contexts (`--build-context mcp=mcp/src --build-context frontendlib=frontend/src/lib`,
+# what .github/workflows/fork-images.yml passes). Without them the empty stages below stand in,
+# the image still boots, and those two routes answer 503. node_modules is linked so the tools
+# resolve zod and the MCP SDK from the api's own dependencies.
+COPY --from=mcp . /mcp/src
+COPY --from=frontendlib . /frontend/src/lib
+RUN ln -s /app/node_modules /mcp/node_modules
 ENV NODE_ENV=production
 ENV PORT=3000
 EXPOSE 3000
