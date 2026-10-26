@@ -56,6 +56,10 @@ const LABELS = {
   'auth.oidc.link': 'Connected Pocket ID',
   'auth.oidc.unlink': 'Disconnected Pocket ID',
   'auth.oidc.fail': 'Pocket ID sign-in or connect failed',
+  // Recovery codes (#584): made by an admin or by the server's own command, used on a new device.
+  'auth.recovery.ok': 'Got back in with a recovery code',
+  'admin.recovery.create': 'Made a recovery code',
+  'server.recovery.create': 'A recovery code was made on the server',
   // The owner's proof (current password or a passkey) for one of the changes below was refused.
   'auth.proof.fail': 'Confirming a change failed',
   // The password throttle paused an address; `msg` says for what (password, signup).
@@ -128,6 +132,8 @@ const REASONS = {
   'bad-nonce': 'the ID token did not belong to this sign-in',
   'bad-sub': 'the ID token named no account',
   'error': 'an unexpected error',
+  // An `admin.denied` for a recovery code: only the owner makes one for an admin (#584).
+  'recovery': 'a recovery code for an admin, which only the owner can make',
   // What an `auth.throttled` pause was for.
   'password': 'wrong passwords or reset codes',
   'signup': 'wrong invite codes on password signup',
@@ -148,6 +154,7 @@ const ACTS = {
   'passkey-add': 'adding a passkey',
   'passkey-remove': 'removing a passkey',
   'device-link': 'making a one-time code for another device',
+  'pair': 'making a code to pair the phone app',
   'account-delete': 'deleting their account'
 }
 export const auditAct = act => ACTS[act] || (act ? String(act) : '')
