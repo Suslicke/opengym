@@ -36,6 +36,7 @@ import { effectiveRoutineId } from './queue.js';
 import { stampPut } from './sync-stamps.js';
 import { atomicWrite as durableWrite } from './durable.js';
 import { excusedOn, nudgeFor, nudgeWindowOpen, toneOf } from './nudge.js';
+import { oidcConfig, createOidcClient, OidcError, pkcePair, randomToken, sealFlow, openFlow, safeEqual } from './oidc.js';
 
 const PORT = +(process.env.PORT || 3000);
 const DATA = process.env.DATA_DIR || '/data';
@@ -72,6 +73,10 @@ const ALLOW_GUEST = !/^(0|false|no|off)$/i.test(process.env.ALLOW_GUEST || '');
 // every account that opts in, so an instance has to ask for it. While it is off every password
 // route answers 404 and the app shows none of it; hashes already stored stay where they are.
 const PASSWORD_LOGIN = /^(1|true|yes|on)$/i.test(process.env.PASSWORD_LOGIN || '');
+// Sign-in with Pocket ID (OpenID Connect, api/oidc.js). Off unless POCKET_ID_CLIENT_ID and
+// POCKET_ID_CLIENT_SECRET are both set; POCKET_ID_ISSUER defaults to https://id.suslicketeam.com.
+// While it is off its routes do not exist (404) and /api/config does not mention it.
+const OIDC = oidcConfig(process.env);
 // The language the sign-in screen, and every profile that never picked one, starts in (#303) —
 // for an instance whose people share a language. Only a tag's shape is checked here; the app
 // matches it against the languages it has and ignores one it does not know. Unset, it is left
@@ -1083,7 +1088,9 @@ const THROTTLED = {
   'POST /api/account/passkeys/options': null, 'POST /api/account/device-link': null,
   'DELETE /api/account/passkeys': null,
   // Deleting the account: the same, for the password that may prove it.
-  'POST /api/account/delete': null
+  'POST /api/account/delete': null,
+  // Each Pocket ID callback can cost a request to the IdP's token endpoint: the burst budget only.
+  'GET /api/auth/oidc/callback': null
 };
 
 // Which address the throttle counts against. Unlike clientIp() above, which only labels a log
@@ -1908,6 +1915,152 @@ const passkeyRoutes = {
   }
 };
 
+/* ---------- sign-in with Pocket ID (OpenID Connect, api/oidc.js) ---------- */
+// A profile is found by the Pocket ID `sub` bound to it (user.oidc = { iss, sub, at }) and by
+// nothing else: not by e-mail, not by name. An unknown sub is refused and never creates a
+// profile. A binding is only made from a browser already signed in to the profile ("Connect
+// Pocket ID" in Settings), and its callback checks that the browser still holds that very session
+// before saving; a profile that has one, or a sub another profile holds, is refused rather than
+// rebound. Signing in sets exactly the cookie a passkey sign-in sets (sessionCookie).
+//
+// The flow's state, nonce and PKCE verifier live in a sealed, short-lived, httpOnly cookie
+// (oidc.js sealFlow), so the callback answers only the browser that started the flow. Every
+// outcome of the callback is a redirect back into the app with `?pocket_id=<result>`, which the
+// app reads once at boot and drops from the address bar.
+const OIDC_COOKIE = SECURE ? '__Host-gym_oidc' : 'gym_oidc';
+const OIDC_FLOW_S = 600;
+const oidcClient = OIDC && createOidcClient({ ...OIDC, redirectUri: ORIGIN.replace(/\/+$/, '') + '/api/auth/oidc/callback' });
+const oidcFlowCookie = v => `${OIDC_COOKIE}=${v}; Path=/; Max-Age=${OIDC_FLOW_S}; HttpOnly;${SECURE} SameSite=Lax`;
+const oidcBoundTo = sub => db.users.find(u => u.oidc && u.oidc.iss === OIDC.issuer && u.oidc.sub === sub) || null;
+const tokenTag = tok => crypto.createHash('sha256').update(String(tok)).digest('base64url').slice(0, 22);
+// The session a link may act for: a browser's cookie, never a Bearer (a paired phone cannot follow
+// the redirect, and the callback only ever sees the cookie).
+function cookieSession(req) {
+  const s = sessionOf(req);
+  return s && !s.bearer ? s : null;
+}
+async function oidcStart(res, flow) {
+  const { verifier, challenge } = pkcePair();
+  const state = randomToken(), nonce = randomToken();
+  const url = await oidcClient.authorizationUrl({ state, nonce, challenge });
+  const sealed = sealFlow(SECRET, { ...flow, s: state, n: nonce, v: verifier, exp: Date.now() + OIDC_FLOW_S * 1000 });
+  return { url, cookie: oidcFlowCookie(sealed) };
+}
+
+const oidcRoutes = {
+  // A top-level navigation from the sign-in screen's "Sign in with Pocket ID".
+  'GET /api/auth/oidc/login': async (req, res) => {
+    let go;
+    try { go = await oidcStart(res, { m: 'login' }); }
+    catch (e) {
+      console.warn('pocket id: cannot start a sign-in:', e instanceof OidcError ? e.code : e.message);
+      res.writeHead(302, { Location: '/?pocket_id=unavailable', 'Cache-Control': 'no-store' });
+      return res.end();
+    }
+    res.writeHead(302, { Location: go.url, 'Set-Cookie': go.cookie, 'Cache-Control': 'no-store' });
+    res.end();
+  },
+
+  // Whether this profile has Pocket ID connected. The sub itself is not handed out.
+  'GET /api/auth/oidc/link': async (req, res) => {
+    const user = readSession(req);
+    if (!user) return notSignedIn(res);
+    json(res, 200, user.oidc ? { linked: true, linkedAt: user.oidc.at || null } : { linked: false });
+  },
+
+  // "Connect Pocket ID": a POST from the app (so the origin check applies), answered with the
+  // address to send the browser to. The flow remembers which profile and which session started it.
+  'POST /api/auth/oidc/link': async (req, res) => {
+    const s = cookieSession(req);
+    if (!s) return notSignedIn(res);
+    await readBody(req);
+    if (s.user.oidc) return json(res, 409, { error: 'Pocket ID is already connected to this profile — disconnect it first', code: 'already-linked' });
+    let go;
+    try { go = await oidcStart(res, { m: 'link', u: s.user.id, sv: sessionVersion(s.user), t: tokenTag(cookieToken(req)) }); }
+    catch (e) {
+      console.warn('pocket id: cannot start a link:', e instanceof OidcError ? e.code : e.message);
+      return json(res, 503, { error: 'Pocket ID cannot be reached right now', code: 'unavailable' });
+    }
+    json(res, 200, { url: go.url }, { 'Set-Cookie': go.cookie });
+  },
+
+  'DELETE /api/auth/oidc/link': async (req, res) => {
+    const user = readSession(req);
+    if (!user) return notSignedIn(res);
+    if (user.oidc) {
+      delete user.oidc;
+      saveDb();
+      audit(req, 'auth.oidc.unlink', { user });
+    }
+    json(res, 200, { ok: true, linked: false });
+  },
+
+  'GET /api/auth/oidc/callback': async (req, res) => {
+    const clear = `${OIDC_COOKIE}=; Path=/; Max-Age=0; HttpOnly;${SECURE} SameSite=Lax`;
+    const back = (result, cookies = []) => {
+      res.writeHead(302, { Location: '/?pocket_id=' + result, 'Set-Cookie': [clear, ...cookies], 'Cache-Control': 'no-store' });
+      res.end();
+    };
+    const q = new URL(req.url, 'http://x').searchParams;
+    const vals = cookieValues(req, OIDC_COOKIE);
+    const flow = vals.length === 1 ? openFlow(SECRET, vals[0]) : null;
+    // Only the browser that started this flow gets past here: its cookie holds the state.
+    if (!flow || !safeEqual(q.get('state') || '', flow.s)) {
+      auditFail(req, 'auth.oidc.fail', { ok: false, msg: flow ? 'state-mismatch' : 'no-flow' });
+      return back('failed');
+    }
+    if (q.get('error')) {
+      auditFail(req, 'auth.oidc.fail', { ok: false, msg: 'idp-error' });
+      return back('denied');
+    }
+    let claims;
+    try { claims = await oidcClient.verifyIdToken(await oidcClient.redeem(q.get('code') || '', flow.v), flow.n); }
+    catch (e) {
+      if (!(e instanceof OidcError)) console.error('pocket id callback', e);
+      auditFail(req, 'auth.oidc.fail', { ok: false, msg: e instanceof OidcError ? e.code : 'error' });
+      return back('failed');
+    }
+
+    if (flow.m === 'login') {
+      const user = oidcBoundTo(claims.sub);
+      if (!user) {
+        auditFail(req, 'auth.oidc.fail', { ok: false, msg: 'unbound' });
+        return back('unbound');
+      }
+      if (user.disabled) {
+        audit(req, 'auth.login.fail', { ok: false, user, msg: 'account-disabled' });
+        return back('disabled');
+      }
+      audit(req, 'auth.login.ok', { user, msg: 'pocket-id' });
+      return back('signed-in', sessionCookie(user));
+    }
+
+    if (flow.m === 'link') {
+      // Everything above awaited the IdP. The browser must still hold the very session that
+      // started this link: same profile, same session version, same cookie.
+      const s = cookieSession(req);
+      if (!s || s.user.id !== flow.u || sessionVersion(s.user) !== flow.sv || tokenTag(cookieToken(req)) !== flow.t) {
+        audit(req, 'auth.oidc.fail', { ok: false, uid: flow.u, msg: 'session-changed' });
+        return back('session');
+      }
+      const user = s.user;
+      if (user.oidc) {
+        audit(req, 'auth.oidc.fail', { ok: false, user, msg: 'already-linked' });
+        return back('already-linked');
+      }
+      if (oidcBoundTo(claims.sub)) {
+        audit(req, 'auth.oidc.fail', { ok: false, user, msg: 'sub-taken' });
+        return back('taken');
+      }
+      user.oidc = { iss: OIDC.issuer, sub: claims.sub, at: new Date().toISOString() };
+      saveDb();
+      audit(req, 'auth.oidc.link', { user });
+      return back('linked');
+    }
+    return back('failed');
+  }
+};
+
 /* ---------- photos & videos of custom exercises (api/media.js) ---------- */
 // One photo, GIF or short video per custom exercise, stored per profile and named by its sha256.
 // The state only ever carries a small ref; the bytes arrive and leave through the routes below.
@@ -2104,6 +2257,8 @@ const routes = {
       invite_only: INVITE_ONLY, allow_guest: ALLOW_GUEST,
       // Only when on, so an instance without passwords answers exactly as it did before (#118).
       ...(PASSWORD_LOGIN ? { password_login: true } : {}),
+      // Pocket ID sign-in is configured: the sign-in screen offers it next to the passkey.
+      ...(OIDC ? { pocket_id: true } : {}),
       // Public: the sign-in screen is the first thing that reads it.
       ...(DEFAULT_LANG ? { default_lang: DEFAULT_LANG } : {}),
       // Public like the two flags above: the caps are not a secret, and the absence of the
@@ -2373,6 +2528,7 @@ const routes = {
 
   // Always there: more passkeys and device links need nothing an instance has to switch on.
   ...passkeyRoutes,
+  ...(OIDC ? oidcRoutes : {}),
 
   // `rev` is the server's own count of writes to this profile (also stored inside the document as
   // `_rev`, so every other reader of the file — reminder tick, admin, Coach, MCP — is unaffected).
