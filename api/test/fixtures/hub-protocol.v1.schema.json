@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://admin.suslicketeam.com/protocol/hub-protocol.v1.schema.json",
+  "title": "Hub protocol v1 summary",
+  "description": "Response of GET /hub/v1/summary. See protocol/SPEC.md. Unknown fields are allowed and ignored by the hub.",
+  "type": "object",
+  "required": [
+    "protocol",
+    "service",
+    "generated_at",
+    "status",
+    "title"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "protocol": {
+      "const": "hub/1"
+    },
+    "service": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "status": {
+      "$ref": "#/$defs/status"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80
+    },
+    "headline": {
+      "type": "string",
+      "maxLength": 280
+    },
+    "metrics": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "$ref": "#/$defs/metric"
+      }
+    },
+    "items": {
+      "type": "array",
+      "maxItems": 10,
+      "items": {
+        "$ref": "#/$defs/item"
+      }
+    },
+    "links": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/link"
+      },
+      "maxItems": 10
+    },
+    "ttl_seconds": {
+      "type": "integer",
+      "minimum": 60
+    }
+  },
+  "$defs": {
+    "status": {
+      "enum": [
+        "ok",
+        "warn",
+        "error"
+      ]
+    },
+    "metric": {
+      "type": "object",
+      "required": [
+        "label",
+        "value"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "value": {
+          "type": "number"
+        },
+        "unit": {
+          "type": "string",
+          "maxLength": 16
+        },
+        "goal": {
+          "type": "number"
+        },
+        "trend": {
+          "enum": [
+            "up",
+            "down",
+            "flat"
+          ]
+        },
+        "period": {
+          "type": "string",
+          "maxLength": 32
+        }
+      }
+    },
+    "item": {
+      "type": "object",
+      "required": [
+        "title"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "maxLength": 2048
+        },
+        "badge": {
+          "$ref": "#/$defs/status"
+        }
+      }
+    },
+    "link": {
+      "type": "object",
+      "required": [
+        "label",
+        "url"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "maxLength": 2048
+        }
+      }
+    }
+  }
+}
