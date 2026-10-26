@@ -43,7 +43,9 @@ RUN apk upgrade --no-cache
 # so in an image without this user *every* job is refused with "no `coach` user exists in this
 # image" — including the fixture provider that exists precisely so the loop can be walked before
 # an account is connected. It costs one line and no bytes worth measuring.
-RUN adduser -D -H -s /sbin/nologin coach
+# Fork (Suslicke/opengym): a fixed uid 10001, so a job can read and refresh a Codex login cache
+# that lives on a volume shared with other containers running as 10001 (checkist_codex_home).
+RUN adduser -D -H -u 10001 -s /sbin/nologin coach
 
 COPY package.json package-lock.json* ./
 # `npm ci` rather than `npm install`: the lockfile is the point of committing one, and the SDK's
