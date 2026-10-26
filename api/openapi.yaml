@@ -282,6 +282,13 @@ paths:
                       community:
                         type: boolean
                         description: Whether "compare with others" is offered on this instance.
+                  pocket_id:
+                    type: boolean
+                    const: true
+                    description: >-
+                      Present (and true) only when POCKET_ID_CLIENT_ID and
+                      POCKET_ID_CLIENT_SECRET are set; the sign-in screen then offers
+                      "Sign in with Pocket ID" (GET /api/auth/oidc/login).
                   password_login:
                     type: boolean
                     const: true
@@ -577,6 +584,102 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Ok' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/auth/oidc/login:
+    get:
+      tags: [auth]
+      operationId: oidcLogin
+      summary: Start a sign-in with Pocket ID
+      description: |
+        Only when `POCKET_ID_CLIENT_ID` and `POCKET_ID_CLIENT_SECRET` are set (otherwise 404, and
+        `/api/config` has no `pocket_id`). A top-level navigation: redirects to the Pocket ID
+        authorization endpoint (authorization code, PKCE S256, state and nonce) and sets a sealed,
+        short-lived, httpOnly flow cookie. Signs in only a profile already bound to the Pocket ID
+        `sub`; never creates one.
+      responses:
+        '302':
+          description: To Pocket ID, or back to `/?pocket_id=unavailable` when it cannot be reached.
+
+  /api/auth/oidc/callback:
+    get:
+      tags: [auth]
+      operationId: oidcCallback
+      summary: Pocket ID redirect target
+      description: |
+        Checks the state against the flow cookie, redeems the code with the PKCE verifier and
+        verifies the ID token (RS256 from the issuer's JWKS; iss, aud, azp, exp, nonce). Always
+        redirects back to the app with `?pocket_id=<result>`: `signed-in` (with the same session
+        cookie a passkey sign-in sets), `linked`, `unbound`, `disabled`, `denied`, `session`,
+        `already-linked`, `taken` or `failed`.
+      parameters:
+        - { name: code, in: query, schema: { type: string } }
+        - { name: state, in: query, schema: { type: string } }
+        - { name: error, in: query, schema: { type: string } }
+      responses:
+        '302':
+          description: Back into the app.
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /api/auth/oidc/link:
+    get:
+      tags: [auth]
+      operationId: oidcLinkStatus
+      summary: Whether Pocket ID is connected to this profile
+      responses:
+        '200':
+          description: The binding's state. The bound `sub` is not returned.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  linked: { type: boolean }
+                  linkedAt: { type: string, format: date-time, nullable: true }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [auth]
+      operationId: oidcLinkStart
+      summary: Connect Pocket ID to this profile
+      description: |
+        Needs a browser session cookie (a Bearer is refused). Answers with the Pocket ID address to
+        navigate to and sets the flow cookie; the callback binds the returned `sub` only if the
+        browser still holds the same session, the profile has no binding yet and no other profile
+        holds that `sub`. An existing binding is never replaced.
+      responses:
+        '200':
+          description: Where to send the browser.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  url: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409':
+          description: Already connected (`code: already-linked`); disconnect first.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          description: Pocket ID cannot be reached (`code: unavailable`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    delete:
+      tags: [auth]
+      operationId: oidcUnlink
+      summary: Disconnect Pocket ID from this profile
+      responses:
+        '200':
+          description: No binding any more.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  linked: { type: boolean }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
   /api/account/delete:
