@@ -136,6 +136,9 @@ describe('Hevy CSV uses the generated title map', () => {
 
   it('detects the Hevy export dialect', () => {
     expect(detectSource(HEVY_CSV.split('\n')[0].split(','))).toBe('Hevy')
+    // a generic file that happens to have a category column is not FitNotes
+    expect(detectSource('workout name,exercise,category,date,start time,end time,duration seconds,distance km,note'.split(','))).toBe(null)
+    expect(detectSource('Date,Exercise,Category,Weight,Reps'.split(','))).toBe('FitNotes')
   })
 
   it('resolves English Hevy titles through HEVY_TITLE_MAP before the word-bag', () => {

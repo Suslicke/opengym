@@ -141,7 +141,9 @@ export function detectSource(header) {
   if (h.includes('exercise name') && h.includes('set order')) return 'Strong'
   if (h.includes('exercise') && h.includes('kind')) return 'FitNotes (iOS)'
   if (h.includes('exercise') && h.includes('weight unit')) return 'FitNotes'
-  if (h.includes('exercise') && h.includes('category')) return 'FitNotes'
+  // FitNotes never writes a workout name or a session start, so a file that has one is someone
+  // else's (a generic CSV with a category column) and reads as plain history.
+  if (h.includes('exercise') && h.includes('category') && !h.includes('workout name') && !h.includes('start time')) return 'FitNotes'
   return null
 }
 
