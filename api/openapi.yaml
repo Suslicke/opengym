@@ -167,6 +167,11 @@ tags:
       attached to a logged workout. Stored per profile (one quota for both) and named
       by the SHA-256 of its bytes; the state only carries a `MediaRef`. Every route here is a
       404 when the instance runs with `MEDIA_UPLOADS=0`.
+  - name: integrations
+    description: >-
+      Fork (Suslicke/opengym): token-only, read-only machine access for one profile
+      (`MCP_PROFILE_ID`, else the first admin). Each route has its own static token and is a 404
+      while that token is unset; neither accepts a session cookie or a session bearer.
   - name: coach
     description: >-
       AI Coach: plans, reviews and debriefs. Every route here answers 503 unless the
@@ -177,6 +182,61 @@ security:
   - bearerAuth: []
 
 paths:
+  /api/mcp:
+    post:
+      tags: [integrations]
+      operationId: mcpRequest
+      summary: MCP over Streamable HTTP
+      description: |
+        The read-only openGym MCP server (`mcp/`, the same nine tools as the stdio server),
+        stateless, answering each JSON-RPC message with a plain JSON body (no SSE, no session
+        id). Authenticated with `Authorization: Bearer <OPENGYM_MCP_TOKEN>` only; the session
+        cookie is never read. A 404 while `OPENGYM_MCP_TOKEN` is unset, and a 503 when the image
+        was built without the MCP tools or no profile can be chosen.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, description: A JSON-RPC 2.0 request, notification or batch. }
+      responses:
+        '200': { description: The JSON-RPC response. }
+        '202': { description: A notification or response was accepted. }
+        '401': { description: Missing or wrong bearer token (with `WWW-Authenticate`). }
+        '404': { description: '`OPENGYM_MCP_TOKEN` is unset.' }
+        '503': { description: The MCP tools are not in this build, or there is no profile to serve. }
+    get:
+      tags: [integrations]
+      operationId: mcpStream
+      summary: MCP server-to-client stream (not offered)
+      description: The server is stateless and JSON-only, so after the same token check this is a 405.
+      security: []
+      responses:
+        '401': { description: Missing or wrong bearer token. }
+        '404': { description: '`OPENGYM_MCP_TOKEN` is unset.' }
+        '405': { description: No SSE stream is offered; use POST. }
+  /api/hub/v1/summary:
+    get:
+      tags: [integrations]
+      operationId: hubSummary
+      summary: admin-hub summary (hub/1)
+      description: |
+        A `hub/1` summary for admin-hub (service `gym`): workouts this week against the weekly
+        plan, days since the last workout, this week's volume, the latest body weight and its
+        trend, and the next planned session. English fields plus `l10n.ru`, whose arrays line up
+        with `metrics`, `items` and `links`. Authenticated with
+        `Authorization: Bearer <OPENGYM_HUB_TOKEN>` only; a wrong or missing token is a 401 with
+        an empty body, and the route is a 404 while `OPENGYM_HUB_TOKEN` is unset.
+      security: []
+      responses:
+        '200':
+          description: The summary.
+          content:
+            application/json:
+              schema: { type: object, description: 'See admin-hub protocol/hub-protocol.v1.schema.json.' }
+        '401': { description: Missing or wrong bearer token (empty body). }
+        '404': { description: '`OPENGYM_HUB_TOKEN` is unset.' }
+        '503': { description: The MCP tools are not in this build, or there is no profile to serve. }
   /api/health:
     get:
       tags: [meta]
