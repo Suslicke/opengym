@@ -93,6 +93,31 @@ Each tool returns JSON the LLM can format as it likes; structured fields (sets, 
 are pre-formatted into human-readable labels in `src/labels.js` so the LLM doesn't need to
 re-interpret them.
 
+## Over HTTP from the api (fork: Suslicke/opengym)
+
+The same nine tools are also served by the api process itself at **`POST /api/mcp`**
+(Streamable HTTP, stateless, plain JSON responses — no SSE, no session id), so a deployed
+instance needs no extra container: whatever already routes `/api` reaches it. `src/server.js`
+builds the server for both entries; `src/index.js` connects it to stdio, `src/http.js` to one
+HTTP request.
+
+| Env (api container) | Meaning |
+|---|---|
+| `OPENGYM_MCP_TOKEN` | Required. `Authorization: Bearer <token>` is the only credential `/api/mcp` accepts — never the session cookie or a session bearer. Unset → the route is a 404. |
+| `MCP_PROFILE_ID` | The profile (user id from `db.json`) the tools read. Unset → the first admin profile. |
+| `OPENGYM_HUB_TOKEN` | Separate token for `GET /api/hub/v1/summary` (admin-hub `hub/1` summary, service `gym`, built from the same tools). Unset → 404. |
+| `TZ` | "Today" and "this week" (Monday–Sunday) are computed in the container's time zone. |
+
+The tools import `frontend/src/lib`, which is outside the api build context: the image takes
+both in as named build contexts (`--build-context mcp=mcp/src --build-context
+frontendlib=frontend/src/lib`, see `api/Dockerfile`). Built without them, the image still runs
+and both routes answer 503.
+
+```bash
+claude mcp add --transport http opengym https://gym.example.com/api/mcp \
+  --header "Authorization: Bearer $OPENGYM_MCP_TOKEN"
+```
+
 ## How it reuses the training logic
 
 The MCP server imports the training helpers under `frontend/src/lib/` directly as Node ESM
