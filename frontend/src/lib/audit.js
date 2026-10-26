@@ -51,6 +51,11 @@ const LABELS = {
   'auth.link.create': 'Made a one-time code for another device',
   'auth.link.ok': 'Added a device with a one-time code',
   'auth.link.fail': 'Adding a device with a code failed',
+  // Sign-in with Pocket ID (OpenID Connect). A successful sign-in is an `auth.login.ok` with
+  // `msg: pocket-id`; these are the binding and the failures, `msg` saying why.
+  'auth.oidc.link': 'Connected Pocket ID',
+  'auth.oidc.unlink': 'Disconnected Pocket ID',
+  'auth.oidc.fail': 'Pocket ID sign-in or connect failed',
   // The owner's proof (current password or a passkey) for one of the changes below was refused.
   'auth.proof.fail': 'Confirming a change failed',
   // The password throttle paused an address; `msg` says for what (password, signup).
@@ -98,6 +103,31 @@ const REASONS = {
   'reset-invalid': 'wrong or expired reset code',
   'link-invalid': 'wrong, used or expired device code',
   'passkey-limit': 'the profile already has as many passkeys as it can hold',
+  // Pocket ID (OpenID Connect).
+  'pocket-id': 'with Pocket ID',
+  'no-flow': 'the Pocket ID sign-in had expired or was started in another browser',
+  'state-mismatch': 'the Pocket ID answer did not belong to this sign-in',
+  'idp-error': 'Pocket ID refused or the person cancelled',
+  'unbound': 'that Pocket ID account is not connected to any profile',
+  'session-changed': 'the session changed while connecting Pocket ID',
+  'already-linked': 'the profile already has Pocket ID connected',
+  'sub-taken': 'that Pocket ID account is connected to another profile',
+  'idp-unreachable': 'Pocket ID could not be reached',
+  'bad-discovery': 'Pocket ID’s configuration was not usable',
+  'bad-jwks': 'Pocket ID’s signing keys were not usable',
+  'token-refused': 'Pocket ID refused the sign-in code',
+  'malformed': 'the ID token was malformed',
+  'bad-alg': 'the ID token used a refused algorithm',
+  'unknown-key': 'the ID token was signed by an unknown key',
+  'bad-signature': 'the ID token signature was invalid',
+  'bad-iss': 'the ID token came from another issuer',
+  'bad-aud': 'the ID token was for another client',
+  'bad-azp': 'the ID token was for another client',
+  'expired': 'the ID token had expired',
+  'not-yet': 'the ID token was not valid yet',
+  'bad-nonce': 'the ID token did not belong to this sign-in',
+  'bad-sub': 'the ID token named no account',
+  'error': 'an unexpected error',
   // What an `auth.throttled` pause was for.
   'password': 'wrong passwords or reset codes',
   'signup': 'wrong invite codes on password signup',
