@@ -4,7 +4,10 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
-const DATA_DIR = process.env.OPENGYM_DATA || path.join(process.cwd(), 'data')
+let DATA_DIR = process.env.OPENGYM_DATA || path.join(process.cwd(), 'data')
+// Set by configure(): a uid chosen by the embedding process (the api's /api/mcp route), which
+// takes precedence over OPENGYM_UID and the single-profile guess.
+let _fixedUid = null
 
 // null = no state file (brand-new account); undefined = not yet loaded.
 let _state = undefined
@@ -49,6 +52,7 @@ function stateFile(uid) {
 // Throws listing the options if ambiguous. The sanitiser on stateFile() keeps a sneaky
 // '..' in OPENGYM_UID harmless.
 function resolveUid() {
+  if (_fixedUid) return _fixedUid
   const envUid = (process.env.OPENGYM_UID || '').trim()
   if (envUid) {
     if (!/^[a-zA-Z0-9_-]+$/.test(envUid)) throw new Error(`OPENGYM_UID contains characters that aren't safe in a filename: ${JSON.stringify(envUid)}`)
@@ -79,6 +83,22 @@ function ambiguousUid(ids) {
   const err = new Error(`this openGym data directory holds ${ids.length} profiles — set OPENGYM_UID to the one this server should read (the ids are on the server's stderr, and in db.json under "users"[].id)`)
   err.code = 'EINVAL'
   return err
+}
+
+// For a host that embeds the tools (the api serves them over HTTP at /api/mcp): point them at a
+// data directory and one profile instead of the OPENGYM_DATA / OPENGYM_UID environment. Calling
+// it again with the same values is free; a different profile drops every cache.
+export function configure({ dataDir, uid } = {}) {
+  if (uid != null && !/^[a-zA-Z0-9_-]+$/.test(uid)) throw new Error('profile id contains characters that aren\'t safe in a filename')
+  const dir = dataDir || DATA_DIR
+  if (dir === DATA_DIR && (uid || null) === _fixedUid && _uid !== null) return
+  DATA_DIR = dir
+  _fixedUid = uid || null
+  _uid = null
+  _state = undefined
+  _db = undefined
+  _loadedMtime = 0
+  if (_watcher) { _watcher.close(); _watcher = null }
 }
 
 // Idempotent. Picks the uid, loads db.json, attaches the watcher, primes state.
