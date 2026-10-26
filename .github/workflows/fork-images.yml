@@ -1,0 +1,91 @@
+# Fork (Suslicke/opengym): build and publish the two images admin-hub deploys on observ.
+#
+#   ghcr.io/suslicke/opengym        — web (React build + nginx), the public origin
+#   ghcr.io/suslicke/opengym-coach  — api, `coach` target (Codex CLI + bubblewrap, coach uid 10001)
+#
+# Tags: the full commit sha and `latest`, on every push to the fork's default branch.
+# Upstream's publishing workflows (GHCR/GitLab mirror/Pages/iOS/CLA) are removed in this fork.
+name: Fork images
+
+on:
+  push:
+    branches: [suslicke]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: fork-images-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-api:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: api/package-lock.json
+      - run: npm ci --omit=optional
+        working-directory: api
+      - run: npm test
+        working-directory: api
+
+  build:
+    needs: test-api
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: opengym
+            context: .
+            file: ./web/Dockerfile
+            target: ''
+          - image: opengym-coach
+            context: ./api
+            file: ./api/Dockerfile
+            target: coach
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Version metadata
+        id: meta
+        run: |
+          echo "owner=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+          echo "version=$(node -p "require('./api/package.json').version")-suslicke.${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          target: ${{ matrix.target }}
+          platforms: linux/amd64
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+            VCS_REF=${{ github.sha }}
+            BUILD_DATE=${{ steps.meta.outputs.date }}
+            APP_BUILD=suslicke.${{ github.sha }}
+          push: true
+          tags: |
+            ghcr.io/${{ steps.meta.outputs.owner }}/${{ matrix.image }}:${{ github.sha }}
+            ghcr.io/${{ steps.meta.outputs.owner }}/${{ matrix.image }}:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
