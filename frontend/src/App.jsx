@@ -6,7 +6,7 @@ import { useUI } from './store/useUI.js'
 import { bindUI } from './components/ui.jsx'
 import { setWeightDecimals } from './lib/format.js'
 import { accentValue, applyAccent } from './lib/accent.js'
-import { setLang, useLang, baseLang } from './lib/i18n.js'
+import { setLang, useLang, baseLang, t } from './lib/i18n.js'
 import { effectiveLang } from './lib/default-lang.js'
 import { setPlayOnSilent, setVibrate, setAlarmBuzzer, setNativeBuzzer } from './lib/sound.js'
 import { buzzAsAlarm } from './lib/rest-alert.js'
@@ -35,6 +35,7 @@ import SyncBanner from './components/SyncBanner.jsx'
 import RestTimer from './components/RestTimer.jsx'
 import TimerFlash from './components/TimerFlash.jsx'
 import { openDeviceLinkRedeem } from './components/Passkeys.jsx'
+import { pocketIdMessage } from './components/PocketId.jsx'
 import { useAnimPacksBoot } from './components/Animations.jsx'
 import Login from './views/Login.jsx'
 import MobileOnboarding from './views/MobileOnboarding.jsx'
@@ -154,6 +155,15 @@ function Shell() {
   // browser. Once per visit; closed, the code stays for the sign-in screen's own button.
   const linkCode = useStore(s => s.linkCode)
   const linkOffered = useRef(false)
+  // Back from Pocket ID: what happened, said once boot is through.
+  const pocketIdResult = useStore(s => s.pocketIdResult)
+  useEffect(() => {
+    if (!ready || !pocketIdResult) return
+    useStore.setState({ pocketIdResult: null })
+    const u = useStore.getState().user
+    const msg = pocketIdResult === 'signed-in' ? (u ? t('Welcome back, {0}', u.name) : '') : pocketIdMessage(pocketIdResult)
+    if (msg) useUI.getState().toast(msg)
+  }, [ready, pocketIdResult])
   useEffect(() => {
     if (!ready || !linkCode || linkOffered.current) return
     linkOffered.current = true

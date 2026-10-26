@@ -11,6 +11,7 @@ import { Button, Segmented } from '../components/ui.jsx'
 import { askAddDeviceData } from '../sheets.jsx'
 import { passwordOn, PasswordRegisterForm, openPasswordSignIn } from '../components/PasswordAuth.jsx'
 import { openDeviceLinkRedeem } from '../components/Passkeys.jsx'
+import { pocketIdOffered, signInWithPocketId } from '../components/PocketId.jsx'
 
 function RegisterSheet({ close }) {
   const { setUser, pushState, pullState, loadConfig } = useStore()
@@ -70,6 +71,7 @@ export default function Login() {
   const config = useStore(s => s.config)
   const canGuest = guestAllowed(config)
   const pwOn = passwordOn(config)
+  const pidOn = pocketIdOffered(config)
   const register = () => useUI.getState().openSheet(close => <RegisterSheet close={close} />)
   const signIn = async () => {
     try { const u = await passkeyLogin(); setUser(u, { adopt: true }); await adoptProfile(askAddDeviceData); useUI.getState().toast(t('Welcome back, {0}', u.name)) }
@@ -103,6 +105,8 @@ export default function Login() {
       {webauthnOK() ? <>
         <Button variant="primary" icon="fingerprint" onClick={signIn}>{t('Sign in with passkey')}</Button>
         <div style={{ height: 10 }} />
+        {/* Only for a profile that has connected Pocket ID in Settings; the passkey stays first. */}
+        {pidOn && <><Button icon="link" onClick={signInWithPocketId}>{t('Sign in with Pocket ID')}</Button><div style={{ height: 10 }} /></>}
         {pwOn && <><Button icon="key" onClick={() => openPasswordSignIn()}>{t('Sign in with password')}</Button><div style={{ height: 10 }} /></>}
         <Button icon="plusCircle" onClick={register}>{t('Create new profile')}</Button>
         {/* Already signed in on another device: a code from there gives this one a passkey of
