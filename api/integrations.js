@@ -1,22 +1,29 @@
-/* Fork (Suslicke/opengym): two read-only ways in for machines, each behind its own static token.
+/* Fork (Suslicke/opengym): ways in for machines, each behind its own static token.
 
      POST /api/mcp            — the MCP server (mcp/) over Streamable HTTP, for an LLM client.
                                 OPENGYM_MCP_TOKEN; the route is a 404 while it is unset.
      GET  /api/hub/v1/summary — a "hub/1" summary for admin-hub's Today screen.
                                 OPENGYM_HUB_TOKEN; a 404 while it is unset.
+     POST /api/hub/v1/import  — a Mi Fitness export (the zip, as the body) forwarded by
+                                admin-hub; its workouts are imported (mi-import.js). The same
+                                token as the summary. The only one of the three that writes.
 
-   Both act on ONE profile: MCP_PROFILE_ID, or the first admin profile when that is unset.
-   Neither ever looks at the session cookie or a session bearer — only its own token works, so a
+   All act on ONE profile: MCP_PROFILE_ID, or the first admin profile when that is unset.
+   None ever looks at the session cookie or a session bearer — only its own token works, so a
    signed-in browser gets nothing here, and the hub's token cannot drive the MCP tools.
 
-   The tools live in mcp/src and read frontend/src/lib, outside this directory. In the image they
-   sit at /mcp and /frontend beside /app (api/Dockerfile), the same relative layout as the source
-   tree, and are imported lazily: an image built without them still boots, and these two routes
-   answer 503 instead. */
+   The tools live in mcp/src and read frontend/src/lib, outside this directory; the import uses
+   the browser's own importer from frontend/src/lib. In the image they sit at /mcp and /frontend
+   beside /app (api/Dockerfile), the same relative layout as the source tree, and are imported
+   lazily: an image built without them still boots, and these routes answer 503 instead. */
 import crypto from 'node:crypto';
+import { SPORT_RECORD, ZipError, zipEntry, miToCsv, importCsv } from './mi-import.js';
 
 const MCP_URL = new URL('../mcp/src/http.js', import.meta.url);
 const TOOLS_URL = new URL('../mcp/src/tools.js', import.meta.url);
+const IMPORT_URL = new URL('../frontend/src/lib/import-csv.js', import.meta.url);
+// An export is a few MB. The cap is what the server will hold in memory for one upload.
+const MAX_ZIP = 64 * 1024 * 1024;
 
 const sha = v => crypto.createHash('sha256').update(String(v)).digest();
 // Hash both sides first: timingSafeEqual needs equal lengths, and comparing digests leaks neither
@@ -41,7 +48,37 @@ async function load() {
   return modules;
 }
 
-export function integrationRoutes({ json, readBody, getDb, isAdmin, dataDir, origin, env = process.env }) {
+let importLib = null;
+async function loadImport() {
+  if (!importLib) {
+    try { importLib = await import(IMPORT_URL.href); }
+    catch (e) {
+      console.error('[integrations] the importer is not available in this build:', e.message);
+      importLib = { missing: true };
+    }
+  }
+  return importLib;
+}
+
+// The upload as bytes, or null once it is over `limit`. readBody (server.js) is for JSON and
+// stops at 5 MB. As there, the rest of an oversized upload is read and dropped rather than the
+// socket closed under it, so the client gets to read its 413; one that keeps sending past twice
+// the limit is cut off.
+function readRaw(req, limit) {
+  return new Promise((resolve, reject) => {
+    let size = 0, over = false; const chunks = [];
+    req.on('data', d => {
+      size += d.length;
+      if (over) { if (size > 2 * limit) req.destroy(); return; }
+      if (size > limit) { over = true; chunks.length = 0; return resolve(null); }
+      chunks.push(d);
+    });
+    req.on('end', () => { if (!over) resolve(Buffer.concat(chunks)); });
+    req.on('error', e => reject(Object.assign(e, { clientGone: true })));
+  });
+}
+
+export function integrationRoutes({ json, readBody, getDb, isAdmin, dataDir, origin, getData, putData, env = process.env }) {
   // MCP_PROFILE_ID, else the first admin. Decided per request: an admin appointed later, or a
   // changed db.json, is picked up without a restart.
   const profileId = () => {
@@ -50,13 +87,28 @@ export function integrationRoutes({ json, readBody, getDb, isAdmin, dataDir, ori
     return getDb().users.find(isAdmin)?.id || null;
   };
 
+  // The profile to act on, or null after answering 503.
+  function profile(res) {
+    const uid = profileId();
+    if (!uid || !/^[a-zA-Z0-9_-]+$/.test(uid)) { json(res, 503, { error: 'no profile to serve: set MCP_PROFILE_ID' }); return null; }
+    return uid;
+  }
+
   async function prepare(res) {
     const m = await load();
     if (m.missing) { json(res, 503, { error: 'the MCP tools are not bundled in this build' }); return null; }
-    const uid = profileId();
-    if (!uid || !/^[a-zA-Z0-9_-]+$/.test(uid)) { json(res, 503, { error: 'no profile to serve: set MCP_PROFILE_ID' }); return null; }
+    const uid = profile(res);
+    if (!uid) return null;
     m.http.configure({ dataDir, uid });
     return m;
+  }
+
+  // An empty 401: the hub reads the status, and a body would only say what was wrong with a guess.
+  function hubGate(req, res) {
+    const token = env.OPENGYM_HUB_TOKEN || '';
+    if (!token) { json(res, 404, { error: 'not found' }); return false; }
+    if (!tokenOk(req, token)) { res.writeHead(401, { 'Cache-Control': 'no-store' }); res.end(); return false; }
+    return true;
   }
 
   function mcpGate(req, res) {
@@ -84,12 +136,34 @@ export function integrationRoutes({ json, readBody, getDb, isAdmin, dataDir, ori
       json(res, 405, { error: 'method not allowed' }, { Allow: 'POST' });
     },
     hubSummary: async (req, res) => {
-      const token = env.OPENGYM_HUB_TOKEN || '';
-      if (!token) return json(res, 404, { error: 'not found' });
-      if (!tokenOk(req, token)) { res.writeHead(401, { 'Cache-Control': 'no-store' }); return res.end(); }
+      if (!hubGate(req, res)) return;
       const m = await prepare(res);
       if (!m) return;
       json(res, 200, buildSummary(m.tools, { origin }));
+    },
+    // The hub sends one export to every service it feeds, so a zip with no sport record in it
+    // is not this route's to complain about: nothing to import, 200.
+    hubImport: async (req, res) => {
+      if (!hubGate(req, res)) return;
+      const lib = await loadImport();
+      if (lib.missing) return json(res, 503, { error: 'the importer is not bundled in this build' });
+      const uid = profile(res);
+      if (!uid) return;
+      const zip = await readRaw(req, MAX_ZIP);
+      if (!zip) return json(res, 413, { error: 'body too large' });
+      let record;
+      try { record = zipEntry(zip, SPORT_RECORD); }
+      catch (e) {
+        if (e instanceof ZipError) return json(res, e.status, { error: e.message });
+        throw e;
+      }
+      const mi = record ? miToCsv(record.toString('utf8')) : null;
+      if (!mi?.workouts) return json(res, 200, { workouts: 0, skipped: 0 });
+      // Nothing is awaited from here on: reading the profile, merging and saving it are one
+      // synchronous step, like PUT /api/data's own compare-and-write.
+      const out = importCsv(mi.csv, { lib, read: () => getData(uid), write: body => putData(uid, body) });
+      if (out.body.workouts) console.log(`[integrations] Mi Fitness import: ${out.body.workouts} workouts added, ${out.body.skipped} already there`);
+      json(res, out.status, out.body);
     }
   };
 }

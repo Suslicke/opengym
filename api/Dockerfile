@@ -60,7 +60,7 @@ RUN npm ci --omit=dev --omit=optional && npm cache clean --force
 
 # Every module server.js imports from the api root has to be named here: the image carries nothing
 # else, and one that is missing only shows at boot, as ERR_MODULE_NOT_FOUND.
-COPY server.js oidc.js push-messages.js nudge.js nudge-copy.js verify-error.js password.js rate-limit.js passkeys-store.js device-link.js media.js queue.js sync-stamps.js durable.js admin-socket.js recover.js integrations.js ./
+COPY server.js oidc.js push-messages.js nudge.js nudge-copy.js verify-error.js password.js rate-limit.js passkeys-store.js device-link.js media.js queue.js sync-stamps.js durable.js admin-socket.js recover.js integrations.js mi-import.js ./
 COPY coach ./coach
 # Fork (Suslicke/opengym): the MCP tools behind /api/mcp and /api/hub/v1/summary, with the
 # frontend lib modules they compute with, at the same paths relative to /app as in the source

@@ -2262,13 +2262,19 @@ function dataWritable() {
 }
 
 // Fork (Suslicke/opengym): token-only machine access, see integrations.js.
-const integrations = integrationRoutes({ json, readBody, getDb: () => db, isAdmin, dataDir: DATA, origin: ORIGIN });
+const integrations = integrationRoutes({ json, readBody, getDb: () => db, isAdmin, dataDir: DATA, origin: ORIGIN,
+  // The import reads and saves a profile the way a device does: what GET /api/data answers, and
+  // PUT /api/data's own write (routes.putData), whose answer it reads instead of sending.
+  getData: uid => { const S = readStateStrict(uid); return S === UNREADABLE ? null : { state: forClient(S), rev: S?._rev || 0 }; },
+  putData: (uid, body) => { let out; routes.putData({ id: uid }, body, (_res, status, obj) => { out = { status, ...obj }; }); return out; } });
 
 const routes = {
-  // MCP over Streamable HTTP (OPENGYM_MCP_TOKEN) and the admin-hub summary (OPENGYM_HUB_TOKEN).
+  // MCP over Streamable HTTP (OPENGYM_MCP_TOKEN), the admin-hub summary and the Mi Fitness
+  // import admin-hub forwards (both OPENGYM_HUB_TOKEN).
   'POST /api/mcp': integrations.mcp,
   'GET /api/mcp': integrations.mcpNoStream,
   'GET /api/hub/v1/summary': integrations.hubSummary,
+  'POST /api/hub/v1/import': integrations.hubImport,
 
   // 503 rather than a flag in a 200: the container healthcheck is `wget --spider`, which reads
   // the status and nothing else, and an instance that cannot write its data directory is exactly
@@ -2637,7 +2643,14 @@ const routes = {
   'PUT /api/data': async (req, res) => {
     const user = readSession(req);
     if (!user) return json(res, 401, { error: 'not signed in' });
-    const body = await readBody(req);
+    return routes.putData(user, await readBody(req), json, res);
+  },
+  // Fork (Suslicke/opengym): the write itself, apart from who asks for it, so that the Mi Fitness
+  // import (integrations.js) saves through the same checks, stamps and revision as a device.
+  // Not a route: no request maps to a key without a method. `json` is how the outcome is
+  // answered, a parameter so that the import can pass its own and read it; the lines below are
+  // upstream's, unchanged.
+  putData(user, body, json, res) {
     if (!body.state || typeof body.state !== 'object') return json(res, 400, { error: 'state required' });
     // An object with nothing of the profile in it empties the document with the counter left
     // intact: what lands on disk is `{"_rev":n+1}`, every routine, workout and weigh-in gone, and
