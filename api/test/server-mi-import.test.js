@@ -6,7 +6,14 @@
    is unset; the workouts of the sport record land in the first admin's document, saved the way a
    device saves (the revision moves, a write id is set, what was there stays as it was); the same
    export again changes nothing; a zip without a sport record is a 200 with zeros, a body that is
-   no zip a 400, a profile with no document a 409. */
+   no zip a 400, a profile with no document a 409.
+
+   And what the import does with the rest of an activity: its heart rate is on the set, not in
+   the note; the weigh-ins of the fitness data join the body weight series in the same save, once,
+   with or without a sport record beside them, each under its day in the server's time zone.
+   A profile that holds an earlier import's workouts (heart rate in the note) has them brought
+   up to date in place, and the save stamps them, so a device merging its older copy keeps the
+   server's. */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
@@ -16,7 +23,10 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { boundPort } from './helpers.mjs';
-import { makeZip, sportRecord } from './zip-sample.mjs';
+import { makeZip, sportRecord, fitnessData } from './zip-sample.mjs';
+import { miToCsv, importMi } from '../mi-import.js';
+import * as lib from '../../frontend/src/lib/import-csv.js';
+import { mergeStates } from '../../frontend/src/lib/sync-merge.js';
 
 const API = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SECRET = crypto.randomBytes(32).toString('hex');
@@ -51,16 +61,30 @@ const memberState = { unit: 'kg', routines: [], week: {}, workouts: [], bodyweig
 
 // Three workouts and a row that is not one. 1700000000 is 2023-11-15 03:13:20 at +05:00; the
 // third is on the day the profile already trained (w_old), which the importer leaves alone.
+// The climb has a heart rate a set can carry; the walk only an average, which stays in its note.
 const RECORD = sportRecord([
-  { key: 'rock_climbing', start_time: 1700100000, end_time: 1700103600, duration: 3600, timezone: 20 },
+  { key: 'rock_climbing', start_time: 1700100000, end_time: 1700103600, duration: 3600, avg_hrm: 132, max_hrm: 171, calories: 410, timezone: 20 },
   { key: 'outdoor_walking', start_time: 1700000000, end_time: 1700002200, duration: 2200, distance: 3021, avg_hrm: 101, calories: 150, timezone: 20 },
   { key: 'outdoor_walking', start_time: 1700450000, end_time: 1700451800, duration: 1800, distance: 2400, timezone: 20 },
   { key: 'broken', raw: 'not-json' },
 ]);
 const NAME = 'MiFitness Personal Data/20261112_1234_MiFitness_hlth_center_sport_record.csv';
-const exportZip = (deflate = true) => makeZip([
+const FITNESS = 'MiFitness Personal Data/20261112_1234_MiFitness_hlth_center_fitness_data.csv';
+// The band's samples, with no weigh-in among them; and the same with three. Midday UTC, so the
+// calendar day is the same wherever the test runs; the last but one is on a date the profile
+// has a weigh-in for.
+const STEPS = fitnessData([{ key: 'steps', time: 1700000000, steps: 12 }]);
+const NOON = Date.UTC(2023, 10, 16, 12) / 1000;
+const WEIGHED = fitnessData([
+  { key: 'steps', time: 1700000000, steps: 12 },
+  { key: 'weight', time: NOON + 5 * 86400, weight: 80.9, bmi: 23.9 },
+  { key: 'heart_rate', time: 1700000060, bpm: 61 },
+  { key: 'weight', time: NOON + 4 * 86400, weight: 80.1, bmi: 23.8 },
+  { key: 'weight', time: NOON, weight: 81.4, bmi: 24.1 },
+]);
+const exportZip = (deflate = true, fitness = STEPS) => makeZip([
   { name: 'MiFitness Personal Data/', data: '' },
-  { name: 'MiFitness Personal Data/20261112_1234_MiFitness_hlth_center_fitness_data.csv', data: 'Uid,Sid,Key,Time,Value,UpdateTime\n1,2,steps,1700000000,"{""steps"":12}",1\n', deflate },
+  { name: FITNESS, data: fitness, deflate },
   { name: '__MACOSX/MiFitness Personal Data/._20261112_1234_MiFitness_hlth_center_sport_record.csv', data: 'Mac OS X', deflate },
   { name: NAME, data: RECORD, deflate },
 ]);
@@ -125,7 +149,7 @@ test('an export\'s workouts land in the first admin\'s history, saved as a devic
   const r = await send(h, exportZip());
   assert.equal(r.status, 200, h.log);
   assert.equal(r.headers.get('cache-control'), 'no-store');
-  assert.deepEqual(await r.json(), { workouts: 2, skipped: 1 });
+  assert.deepEqual(await r.json(), { workouts: 2, skipped: 1, weights: 0, updated: 0 });
 
   const S = h.state('u_admin');
   assert.deepEqual(S.workouts.map(w => w.d), ['2023-11-15', '2023-11-16', '2023-11-20']);
@@ -138,7 +162,11 @@ test('an export\'s workouts land in the first admin\'s history, saved as a devic
   assert.equal(walk.entries.length, 1);
   assert.deepEqual(walk.entries[0].sets.map(({ min, speed, done }) => ({ min, speed, done })), [{ min: 36.7, speed: 4.9, done: true }]);
   assert.equal(walk.entries[0].note, 'avg HR 101 · 150 kcal · Mi Fitness');
-  assert.deepEqual(climb.entries[0].sets.map(({ min, speed }) => ({ min, speed })), [{ min: 60, speed: 0 }]);
+  assert.equal(walk.entries[0].sets[0].hr, undefined);
+  // A heart rate that is one goes where the app keeps it, on the set, and out of the note.
+  assert.deepEqual(climb.entries[0].sets, [{ min: 60, speed: 0, done: true, hr: { avg: 132, max: 171 } }]);
+  assert.equal(climb.entries[0].note, '410 kcal · Mi Fitness');
+  assert.equal(climb.hr, undefined);
   // Sports the catalogue does not have become the profile's own exercises, as cardio.
   const own = Object.fromEntries(S.customEx.map(c => [c.id, c]));
   assert.equal(own[walk.entries[0].id].n, 'outdoor walk');
@@ -161,18 +189,18 @@ test('an export\'s workouts land in the first admin\'s history, saved as a devic
 
 test('the same export a second time adds nothing and leaves the document and its revision alone', async t => {
   const h = await startServer(t, { OPENGYM_HUB_TOKEN: HUB_TOKEN });
-  assert.deepEqual(await (await send(h, exportZip(false))).json(), { workouts: 2, skipped: 1 });
+  assert.deepEqual(await (await send(h, exportZip(false))).json(), { workouts: 2, skipped: 1, weights: 0, updated: 0 });
   const after = h.file('u_admin');
   const ids = h.state('u_admin').workouts.map(w => w.id);
 
   const again = await send(h, exportZip(false));
   assert.equal(again.status, 200);
-  assert.deepEqual(await again.json(), { workouts: 0, skipped: 3 });
+  assert.deepEqual(await again.json(), { workouts: 0, skipped: 3, weights: 0, updated: 0 });
   assert.equal(h.file('u_admin'), after);
   assert.deepEqual((await rev(h)).rev, 1);
 
   // Deflated this time, and the ids are what the file says, not chance: still nothing new.
-  assert.deepEqual(await (await send(h, exportZip(true))).json(), { workouts: 0, skipped: 3 });
+  assert.deepEqual(await (await send(h, exportZip(true))).json(), { workouts: 0, skipped: 3, weights: 0, updated: 0 });
   assert.deepEqual(h.state('u_admin').workouts.map(w => w.id), ids);
 });
 
@@ -201,7 +229,7 @@ test('a device that syncs after the import keeps the imported workouts and its o
 test('MCP_PROFILE_ID picks the profile the import goes to', async t => {
   const h = await startServer(t, { OPENGYM_HUB_TOKEN: HUB_TOKEN, MCP_PROFILE_ID: 'u_member' });
   const admin = h.file('u_admin');
-  assert.deepEqual(await (await send(h, exportZip())).json(), { workouts: 3, skipped: 0 });
+  assert.deepEqual(await (await send(h, exportZip())).json(), { workouts: 3, skipped: 0, weights: 0, updated: 0 });
   assert.equal(h.state('u_member').workouts.length, 3);
   assert.equal(h.file('u_admin'), admin);
 });
@@ -215,12 +243,126 @@ test('a zip without a sport record is not an error: 200, nothing imported', asyn
     // The file is there and holds no workout.
     makeZip([{ name: NAME, data: sportRecord([]) }]),
     makeZip([{ name: NAME, data: sportRecord([{ key: 'broken', raw: 'not-json' }]), deflate: true }]),
+    // The fitness data is there and holds no weigh-in, or none a body could have.
+    makeZip([{ name: FITNESS, data: STEPS, deflate: true }]),
+    makeZip([{ name: FITNESS, data: fitnessData([{ key: 'weight', time: NOON, weight: 900 }, { key: 'weight', raw: 'not-json' }]) }]),
   ]) {
     const r = await send(h, zip);
     assert.equal(r.status, 200, h.log);
-    assert.deepEqual(await r.json(), { workouts: 0, skipped: 0 });
+    assert.deepEqual(await r.json(), { workouts: 0, skipped: 0, weights: 0, updated: 0 });
   }
   assert.equal(h.file('u_admin'), before);
+});
+
+test('the export\'s weigh-ins join the body weight series, in the same save as the workouts, and once', async t => {
+  const h = await startServer(t, { OPENGYM_HUB_TOKEN: HUB_TOKEN });
+  const r = await send(h, exportZip(true, WEIGHED));
+  assert.equal(r.status, 200, h.log);
+  assert.deepEqual(await r.json(), { workouts: 2, skipped: 1, weights: 2, updated: 0 });
+
+  const S = h.state('u_admin');
+  assert.equal(S._rev, 1, 'one save for both');
+  assert.deepEqual(S.workouts.map(w => w.d), ['2023-11-15', '2023-11-16', '2023-11-20']);
+  // In the profile's unit, each with the moment it was taken, marked as imported; the date that
+  // had a weigh-in keeps the one it had.
+  assert.deepEqual(S.bodyweight, [
+    { d: '2023-11-16', w: 81.4, t: NOON * 1000, src: 'import' },
+    { d: '2023-11-20', w: 82 },
+    { d: '2023-11-21', w: 80.9, t: (NOON + 5 * 86400) * 1000, src: 'import' },
+  ]);
+  assert.deepEqual((await pull(h)).state.bodyweight, S.bodyweight);
+
+  const after = h.file('u_admin');
+  assert.deepEqual(await (await send(h, exportZip(false, WEIGHED))).json(), { workouts: 0, skipped: 3, weights: 0, updated: 0 });
+  assert.equal(h.file('u_admin'), after);
+});
+
+test('a zip with weigh-ins and no sport record imports the weigh-ins', async t => {
+  const h = await startServer(t, { OPENGYM_HUB_TOKEN: HUB_TOKEN });
+  const zip = makeZip([{ name: 'MiFitness Personal Data/', data: '' }, { name: FITNESS, data: WEIGHED, deflate: true }]);
+  const r = await send(h, zip);
+  assert.equal(r.status, 200, h.log);
+  assert.deepEqual(await r.json(), { workouts: 0, skipped: 0, weights: 2, updated: 0 });
+  const S = h.state('u_admin');
+  assert.deepEqual(S.bodyweight.map(b => [b.d, b.w]), [['2023-11-16', 81.4], ['2023-11-20', 82], ['2023-11-21', 80.9]]);
+  assert.deepEqual(S.workouts, [OLD]);
+  assert.deepEqual(S.customEx, []);
+  assert.equal(S._rev, 1);
+  assert.deepEqual(await (await send(h, zip)).json(), { workouts: 0, skipped: 0, weights: 0, updated: 0 });
+  assert.equal(h.state('u_admin')._rev, 1);
+});
+
+test('a profile in pounds gets the weigh-ins in pounds', async t => {
+  const h = await startServer(t, { OPENGYM_HUB_TOKEN: HUB_TOKEN, MCP_PROFILE_ID: 'u_member' });
+  fs.writeFileSync(path.join(h.dataDir, 'state-u_member.json'), JSON.stringify({ ...memberState, unit: 'lb' }));
+  assert.deepEqual(await (await send(h, exportZip(true, WEIGHED))).json(), { workouts: 3, skipped: 0, weights: 3, updated: 0 });
+  assert.deepEqual(h.state('u_member').bodyweight.map(b => [b.d, b.w]), [['2023-11-16', 179.46], ['2023-11-20', 176.59], ['2023-11-21', 178.35]]);
+});
+
+test('a weigh-in is filed under its day in the server\'s time zone', async t => {
+  // 2023-11-16 21:30 UTC: still the 16th in UTC, the 17th already in Almaty (+05:00).
+  const at = Date.UTC(2023, 10, 16, 21, 30) / 1000;
+  const zip = makeZip([{ name: FITNESS, data: fitnessData([{ key: 'weight', time: at, weight: 81.4, bmi: 24.1 }]), deflate: true }]);
+  for (const [TZ, day] of [['UTC', '2023-11-16'], ['Asia/Almaty', '2023-11-17']]) {
+    const h = await startServer(t, { OPENGYM_HUB_TOKEN: HUB_TOKEN, TZ });
+    assert.deepEqual(await (await send(h, zip)).json(), { workouts: 0, skipped: 0, weights: 1, updated: 0 }, TZ);
+    assert.deepEqual(h.state('u_admin').bodyweight[0], { d: day, w: 81.4, t: at * 1000, src: 'import' }, TZ);
+  }
+});
+
+// The admin's profile as the first deployment of this route left it: the script's CSV imported
+// as it was, heart rate in the note. Made with the same save loop, in memory.
+function earlierImport() {
+  let doc = structuredClone(adminState);
+  importMi({ csv: miToCsv(RECORD).csv }, { lib, read: () => ({ state: doc, rev: 0 }), write: body => { doc = body.state; return { status: 200 }; } });
+  return doc;
+}
+
+test('workouts an earlier import left are brought up to date in place, saved, and stamped for the devices', async t => {
+  const h = await startServer(t, { OPENGYM_HUB_TOKEN: HUB_TOKEN });
+  const first = earlierImport();
+  assert.equal(first.workouts[1].entries[0].note, 'avg HR 132 · max HR 171 · 410 kcal · Mi Fitness');
+  assert.equal(first.workouts[1].entries[0].sets[0].hr, undefined);
+  fs.writeFileSync(path.join(h.dataDir, 'state-u_admin.json'), JSON.stringify(first));
+  const device = await pull(h);                       // a phone's copy, from before the update
+
+  const sent = Date.now();
+  const r = await send(h, exportZip());
+  assert.equal(r.status, 200, h.log);
+  // The climb had a heart rate to move; the walk has only an average, which stays in its note.
+  assert.deepEqual(await r.json(), { workouts: 0, skipped: 3, weights: 0, updated: 1 });
+  const S = h.state('u_admin');
+  assert.equal(S._rev, 1);
+  const [walk, climb, old] = S.workouts;
+  assert.deepEqual(climb.entries[0].sets, [{ min: 60, speed: 0, done: true, hr: { avg: 132, max: 171 } }]);
+  assert.equal(climb.entries[0].note, '410 kcal · Mi Fitness');
+  // PUT /api/data's own stamping, for a writer that does not stamp: the edit has a time, per field.
+  assert.ok(climb._ts >= sent, 'stamped at the server\'s clock');
+  assert.deepEqual(climb._f, { entries: climb._ts });
+  const { _ts, _f, ...rest } = climb;
+  assert.deepEqual({ ...rest, entries: 0 }, { ...first.workouts[1], entries: 0 });
+  assert.deepEqual(walk, first.workouts[0]);
+  assert.deepEqual(old, OLD);
+
+  // The phone, which has the workout without a heart rate, logs a weigh-in and syncs: its push is
+  // refused with the current document, it merges (frontend lib/sync-merge.js), and pushes again.
+  const headers = { ...bearer(mintToken('u_admin')), 'Content-Type': 'application/json' };
+  const mine = { ...device.state, _ts: Date.now() + 5000, bodyweight: [...device.state.bodyweight, { d: '2023-11-22', w: 81, t: Date.now() }] };
+  const stale = await fetch(`${h.api}/api/data`, { method: 'PUT', headers, body: JSON.stringify({ state: mine, baseRev: device.rev, stamped: true }) });
+  assert.equal(stale.status, 409);
+  const cur = await stale.json();
+  const merged = mergeStates(mine, cur.state);
+  assert.deepEqual(merged.workouts.map(w => w.entries), S.workouts.map(w => w.entries));
+  const ok = await fetch(`${h.api}/api/data`, { method: 'PUT', headers, body: JSON.stringify({ state: merged, baseRev: cur.rev, baseWid: cur.state._wid, stamped: true }) });
+  assert.equal(ok.status, 200);
+  const after = h.state('u_admin');
+  assert.deepEqual(after.workouts[1].entries, climb.entries);
+  assert.deepEqual(after.bodyweight.map(b => b.d), ['2023-11-20', '2023-11-22']);
+
+  // The export once more: nothing left to bring up to date, nothing written.
+  const file = h.file('u_admin');
+  assert.deepEqual(await (await send(h, exportZip())).json(), { workouts: 0, skipped: 3, weights: 0, updated: 0 });
+  assert.equal(h.file('u_admin'), file);
 });
 
 test('a body that is not a zip is a 400', async t => {
@@ -264,5 +406,5 @@ test('an upload over 64 MB is a 413', async t => {
   const r = await send(h, Buffer.alloc(64 * 1024 * 1024 + 1));
   assert.equal(r.status, 413);
   // The server is still there for the next one.
-  assert.deepEqual(await (await send(h, exportZip())).json(), { workouts: 2, skipped: 1 });
+  assert.deepEqual(await (await send(h, exportZip())).json(), { workouts: 2, skipped: 1, weights: 0, updated: 0 });
 });

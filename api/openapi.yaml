@@ -246,9 +246,16 @@ paths:
         A Mi Fitness personal-data export, the zip itself as the request body (up to 64 MB), as
         admin-hub forwards it. The workouts in its `*hlth_center_sport_record.csv` are converted
         to openGym's import CSV and merged into the profile with the app's own importer: one
-        cardio set per workout, heart rate, kcal and steps in the note, and a day that already
-        holds a workout is left alone, so the same export twice adds nothing. A zip without that
-        file is not an error (the hub sends one export to every service): `200` with zeros.
+        cardio set per workout, its heart rate on the set (`hr: { avg, max }`) when the export
+        has a plausible average and maximum and in the note otherwise, kcal and steps in the
+        note, and a day that already holds a workout is left alone, so the same export twice adds
+        nothing. The one exception is a workout an earlier import made itself (the same id, the
+        same exercises and sets, its note still the import's own): its sets get the heart rate
+        and its entries the note, in place, a set that already has a heart rate keeping it.
+        The weigh-ins in its `*hlth_center_fitness_data.csv` (`Key` = `weight`) join the
+        body weight series in the same save: one a day, in the profile's unit, under their day in
+        the server's time zone, and a date that already has a weigh-in keeps it. A zip with
+        neither file is not an error (the hub sends one export to every service): `200` with zeros.
         Saved like a device's `PUT /api/data`, over the current revision. Authenticated with
         `Authorization: Bearer <OPENGYM_HUB_TOKEN>` only, as the summary is.
       security: []
@@ -267,11 +274,13 @@ paths:
                 properties:
                   workouts: { type: integer, description: Workouts (days) added to the history. }
                   skipped: { type: integer, description: Workouts in the file that were not added because their day already has one. }
+                  weights: { type: integer, description: Weigh-ins added to the body weight series. }
+                  updated: { type: integer, description: 'Workouts of an earlier import (counted in `skipped` too) whose sets were given their heart rate in place.' }
         '400': { description: The body is not a zip archive this can read. }
         '401': { description: Missing or wrong bearer token (empty body). }
         '404': { description: '`OPENGYM_HUB_TOKEN` is unset.' }
         '409': { description: 'The profile has no synced data yet (`code: no-state`), or kept changing while the import was saved (`code: conflict`).' }
-        '413': { description: 'The body, or the sport record once unpacked, is over 64 MB.' }
+        '413': { description: 'The body, or one of the two files once unpacked, is over 64 MB.' }
         '503': { description: 'The importer is not in this build, there is no profile to serve, or its state cannot be read.' }
   /api/health:
     get:

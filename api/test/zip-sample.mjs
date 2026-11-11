@@ -52,10 +52,19 @@ export function makeZip(entries, { comment = '' } = {}) {
   return Buffer.concat([...files, dir, end, Buffer.from(comment)]);
 }
 
+const q = s => '"' + String(s).replace(/"/g, '""') + '"';
+
 /** A sport record: the export's header, and one row per { key, ...the Value's fields } (or a
  *  string, written as the Value as it is). */
 export function sportRecord(rows) {
-  const q = s => '"' + String(s).replace(/"/g, '""') + '"';
   return 'Uid,Sid,Key,Time,Category,Value,UpdateTime\n' + rows.map(({ key, ...v }) =>
     `1,2,${key},${v.start_time ?? 1},${key},${q(typeof v.raw === 'string' ? v.raw : JSON.stringify(v))},1\n`).join('');
+}
+
+/** The fitness data: its header (no Category column, unlike the sport record), and one row per
+ *  { key, ...the Value's fields } (or `raw`, written as the Value as it is). A weigh-in is
+ *  { key: 'weight', time, weight, bmi }. */
+export function fitnessData(rows) {
+  return 'Uid,Sid,Key,Time,Value,UpdateTime\n' + rows.map(({ key, ...v }) =>
+    `1,2,${key},${v.time ?? 1},${q(typeof v.raw === 'string' ? v.raw : JSON.stringify(v))},1\n`).join('');
 }

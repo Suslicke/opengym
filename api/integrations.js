@@ -5,8 +5,9 @@
      GET  /api/hub/v1/summary — a "hub/1" summary for admin-hub's Today screen.
                                 OPENGYM_HUB_TOKEN; a 404 while it is unset.
      POST /api/hub/v1/import  — a Mi Fitness export (the zip, as the body) forwarded by
-                                admin-hub; its workouts are imported (mi-import.js). The same
-                                token as the summary. The only one of the three that writes.
+                                admin-hub; its workouts and weigh-ins are imported
+                                (mi-import.js). The same token as the summary. The only one of
+                                the three that writes.
 
    All act on ONE profile: MCP_PROFILE_ID, or the first admin profile when that is unset.
    None ever looks at the session cookie or a session bearer — only its own token works, so a
@@ -17,11 +18,12 @@
    beside /app (api/Dockerfile), the same relative layout as the source tree, and are imported
    lazily: an image built without them still boots, and these routes answer 503 instead. */
 import crypto from 'node:crypto';
-import { SPORT_RECORD, ZipError, zipEntry, miToCsv, importCsv } from './mi-import.js';
+import { SPORT_RECORD, FITNESS_DATA, ZipError, zipEntry, miToImport, miWeights, importMi } from './mi-import.js';
 
 const MCP_URL = new URL('../mcp/src/http.js', import.meta.url);
 const TOOLS_URL = new URL('../mcp/src/tools.js', import.meta.url);
 const IMPORT_URL = new URL('../frontend/src/lib/import-csv.js', import.meta.url);
+const HR_URL = new URL('../frontend/src/lib/heart-rate.js', import.meta.url);
 // An export is a few MB. The cap is what the server will hold in memory for one upload.
 const MAX_ZIP = 64 * 1024 * 1024;
 
@@ -48,11 +50,14 @@ async function load() {
   return modules;
 }
 
+// The importer, and what makes a heart rate one a set may carry (`sanitizeHr`).
 let importLib = null;
 async function loadImport() {
   if (!importLib) {
-    try { importLib = await import(IMPORT_URL.href); }
-    catch (e) {
+    try {
+      const [lib, hr] = await Promise.all([import(IMPORT_URL.href), import(HR_URL.href)]);
+      importLib = { lib, sanitizeHr: hr.sanitizeHr };
+    } catch (e) {
       console.error('[integrations] the importer is not available in this build:', e.message);
       importLib = { missing: true };
     }
@@ -141,28 +146,32 @@ export function integrationRoutes({ json, readBody, getDb, isAdmin, dataDir, ori
       if (!m) return;
       json(res, 200, buildSummary(m.tools, { origin }));
     },
-    // The hub sends one export to every service it feeds, so a zip with no sport record in it
-    // is not this route's to complain about: nothing to import, 200.
+    // The hub sends one export to every service it feeds, so a zip with neither a sport record
+    // nor fitness data in it is not this route's to complain about: nothing to import, 200.
     hubImport: async (req, res) => {
       if (!hubGate(req, res)) return;
-      const lib = await loadImport();
-      if (lib.missing) return json(res, 503, { error: 'the importer is not bundled in this build' });
+      const { lib, sanitizeHr, missing } = await loadImport();
+      if (missing) return json(res, 503, { error: 'the importer is not bundled in this build' });
       const uid = profile(res);
       if (!uid) return;
       const zip = await readRaw(req, MAX_ZIP);
       if (!zip) return json(res, 413, { error: 'body too large' });
-      let record;
-      try { record = zipEntry(zip, SPORT_RECORD); }
-      catch (e) {
+      let mi = null, weights = [];
+      try {
+        const record = zipEntry(zip, SPORT_RECORD);
+        if (record) mi = miToImport(record.toString('utf8'), sanitizeHr);
+        // Some 30 MB unpacked, held only while the couple of weigh-ins are picked out of it.
+        const fitness = zipEntry(zip, FITNESS_DATA);
+        if (fitness) weights = miWeights(fitness);
+      } catch (e) {
         if (e instanceof ZipError) return json(res, e.status, { error: e.message });
         throw e;
       }
-      const mi = record ? miToCsv(record.toString('utf8')) : null;
-      if (!mi?.workouts) return json(res, 200, { workouts: 0, skipped: 0 });
+      if (!mi?.workouts && !weights.length) return json(res, 200, { workouts: 0, skipped: 0, weights: 0, updated: 0 });
       // Nothing is awaited from here on: reading the profile, merging and saving it are one
       // synchronous step, like PUT /api/data's own compare-and-write.
-      const out = importCsv(mi.csv, { lib, read: () => getData(uid), write: body => putData(uid, body) });
-      if (out.body.workouts) console.log(`[integrations] Mi Fitness import: ${out.body.workouts} workouts added, ${out.body.skipped} already there`);
+      const out = importMi({ csv: mi?.csv, rows: mi?.rows, weights }, { lib, sanitizeHr, read: () => getData(uid), write: body => putData(uid, body) });
+      if (out.body.workouts || out.body.weights || out.body.updated) console.log(`[integrations] Mi Fitness import: ${out.body.workouts} workouts added, ${out.body.skipped} already there (${out.body.updated} of them brought up to date), ${out.body.weights} weigh-ins added`);
       json(res, out.status, out.body);
     }
   };
